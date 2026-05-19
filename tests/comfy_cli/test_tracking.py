@@ -84,9 +84,6 @@ class TestTrackCommandRedaction:
         assert "sk-supersecret" not in str(props)
 
     def test_api_key_none_stays_none(self, tracking_module):
-        # When the user didn't pass --api-key (or set $COMFY_API_KEY), we still
-        # want to be able to see in the analytics that it was absent — not a
-        # "<redacted>" sentinel that would imply they did pass one.
         tracking_module.config_manager.set(constants.CONFIG_KEY_ENABLE_TRACKING, "True")
 
         @tracking_module.track_command()
@@ -97,6 +94,84 @@ class TestTrackCommandRedaction:
 
         _, kwargs = tracking_module.mp.track.call_args
         assert kwargs["properties"]["api_key"] is None
+
+    def test_set_civitai_api_token_is_redacted(self, tracking_module):
+        tracking_module.config_manager.set(constants.CONFIG_KEY_ENABLE_TRACKING, "True")
+
+        @tracking_module.track_command("model")
+        def download(url, set_civitai_api_token=None, set_hf_api_token=None):
+            return None
+
+        download(url="https://example.com", set_civitai_api_token="civ-real-token")
+
+        tracking_module.mp.track.assert_called_once()
+        _, kwargs = tracking_module.mp.track.call_args
+        props = kwargs["properties"]
+        assert props["set_civitai_api_token"] == "<redacted>"
+        assert "civ-real-token" not in str(props)
+
+    def test_set_hf_api_token_is_redacted(self, tracking_module):
+        tracking_module.config_manager.set(constants.CONFIG_KEY_ENABLE_TRACKING, "True")
+
+        @tracking_module.track_command("model")
+        def download(url, set_civitai_api_token=None, set_hf_api_token=None):
+            return None
+
+        download(url="https://example.com", set_hf_api_token="hf_real-token")
+
+        tracking_module.mp.track.assert_called_once()
+        _, kwargs = tracking_module.mp.track.call_args
+        props = kwargs["properties"]
+        assert props["set_hf_api_token"] == "<redacted>"
+        assert "hf_real-token" not in str(props)
+
+    def test_bare_token_kwarg_is_redacted(self, tracking_module):
+        tracking_module.config_manager.set(constants.CONFIG_KEY_ENABLE_TRACKING, "True")
+
+        @tracking_module.track_command()
+        def some_cmd(workflow, token=None):
+            return None
+
+        some_cmd(workflow="wf.json", token="my-secret-token")
+
+        tracking_module.mp.track.assert_called_once()
+        _, kwargs = tracking_module.mp.track.call_args
+        props = kwargs["properties"]
+        assert props["token"] == "<redacted>"
+        assert "my-secret-token" not in str(props)
+
+    def test_underscore_ctx_is_excluded(self, tracking_module):
+        import click
+
+        tracking_module.config_manager.set(constants.CONFIG_KEY_ENABLE_TRACKING, "True")
+
+        @tracking_module.track_command("model")
+        def download(_ctx, url, set_civitai_api_token=None):
+            return None
+
+        ctx = click.Context(click.Command("download"))
+        download(_ctx=ctx, url="https://example.com")
+
+        tracking_module.mp.track.assert_called_once()
+        _, kwargs = tracking_module.mp.track.call_args
+        props = kwargs["properties"]
+        assert "_ctx" not in props
+        assert props["url"] == "https://example.com"
+
+    def test_non_serializable_value_is_excluded(self, tracking_module):
+        tracking_module.config_manager.set(constants.CONFIG_KEY_ENABLE_TRACKING, "True")
+
+        @tracking_module.track_command()
+        def some_cmd(workflow, callback=None):
+            return None
+
+        some_cmd(workflow="wf.json", callback=lambda x: x)
+
+        tracking_module.mp.track.assert_called_once()
+        _, kwargs = tracking_module.mp.track.call_args
+        props = kwargs["properties"]
+        assert "callback" not in props
+        assert props["workflow"] == "wf.json"
 
 
 class TestInitTrackingRoundTrip:

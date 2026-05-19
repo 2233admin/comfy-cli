@@ -1,4 +1,5 @@
 import functools
+import json
 import logging as logginglib
 import sys
 import uuid
@@ -16,9 +17,49 @@ logginglib.getLogger("urllib3").setLevel(logginglib.ERROR)
 MIXPANEL_TOKEN = "93aeab8962b622d431ac19800ccc9f67"
 mp = Mixpanel(MIXPANEL_TOKEN) if MIXPANEL_TOKEN else None
 
-# Kwargs whose values must never reach tracking system.
-# The key is kept (with a redacted marker) so we can still see whether the option was supplied.
-SENSITIVE_TRACKING_KEYS = frozenset({"api_key"})
+# ---------------------------------------------------------------------------
+# Sensitive-kwarg redaction and kwarg filtering for track_command()
+#
+# Historical context (BE-992): the original SENSITIVE_TRACKING_KEYS only
+# matched "api_key" by exact name, missing kwargs such as
+# set_civitai_api_token and set_hf_api_token.  Separately, the kwarg filter
+# dropped "ctx" and "context" but not "_ctx" (underscore-prefixed Click
+# Context).  These two gaps *cancelled each other out*: the un-redacted
+# credential payload always included the non-JSON-serializable _ctx object,
+# so mp.track() raised a TypeError before the event reached Mixpanel.
+#
+# Fixing the underscore-prefix filter without also broadening the credential
+# allowlist would silently activate a CWE-200 credential leak.  Both filters
+# are therefore fixed atomically here.
+# ---------------------------------------------------------------------------
+
+_SENSITIVE_SUFFIXES = ("_token", "_api_key", "_secret", "_password")
+_SENSITIVE_EXACT = frozenset({"api_key", "token", "password", "secret"})
+
+
+def _is_sensitive(name: str) -> bool:
+    """Return True if *name* looks like it holds a credential or secret."""
+    return name in _SENSITIVE_EXACT or name.endswith(_SENSITIVE_SUFFIXES)
+
+
+def _is_trackable(name: str, value: object) -> bool:
+    """Return True if the kwarg (name, value) pair is safe to include in a tracking event.
+
+    Excluded:
+    * ``ctx`` / ``context`` — Click context objects passed by Typer.
+    * Any name starting with ``_`` — covers ``_ctx`` and other private/internal params.
+    * Values that are not JSON-serializable — defensive guard so a single
+      unserializable kwarg doesn't silently swallow the entire event.
+    """
+    if name in ("ctx", "context"):
+        return False
+    if name.startswith("_"):
+        return False
+    try:
+        json.dumps(value)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return True
 
 # Generate a unique tracing ID per command.
 config_manager = ConfigManager()
@@ -79,12 +120,10 @@ def track_command(sub_command: str = None):
         def wrapper(*args, **kwargs):
             command_name = f"{sub_command}:{func.__name__}" if sub_command is not None else func.__name__
 
-            # Copy kwargs to avoid mutating original dictionary
-            # Remove context and ctx from the dictionary as they are not needed for tracking and not serializable.
             filtered_kwargs = {
-                k: ("<redacted>" if v is not None else None) if k in SENSITIVE_TRACKING_KEYS else v
+                k: ("<redacted>" if v is not None else None) if _is_sensitive(k) else v
                 for k, v in kwargs.items()
-                if k != "ctx" and k != "context"
+                if _is_trackable(k, v)
             }
 
             logging.debug(f"Tracking command: {command_name} with arguments: {filtered_kwargs}")
