@@ -61,6 +61,7 @@ def _is_trackable(name: str, value: object) -> bool:
         return False
     return True
 
+
 # Generate a unique tracing ID per command.
 config_manager = ConfigManager()
 cli_version = config_manager.get_cli_version()
