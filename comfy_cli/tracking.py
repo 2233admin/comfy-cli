@@ -38,8 +38,13 @@ _SENSITIVE_EXACT = frozenset({"api_key", "token", "password", "secret"})
 
 
 def _is_sensitive(name: str) -> bool:
-    """Return True if *name* looks like it holds a credential or secret."""
-    return name in _SENSITIVE_EXACT or name.endswith(_SENSITIVE_SUFFIXES)
+    """Return True if *name* looks like it holds a credential or secret.
+
+    Matched case-insensitively so future kwargs added with non-PEP-8 casing
+    (``API_KEY``, ``apiKey``, ``AuthToken``, etc.) don't bypass redaction.
+    """
+    lower = name.lower()
+    return lower in _SENSITIVE_EXACT or lower.endswith(_SENSITIVE_SUFFIXES)
 
 
 def _is_trackable(name: str, value: object) -> bool:
@@ -57,7 +62,7 @@ def _is_trackable(name: str, value: object) -> bool:
         return False
     try:
         json.dumps(value)
-    except (TypeError, ValueError, OverflowError):
+    except (TypeError, ValueError, OverflowError, RecursionError):
         return False
     return True
 
